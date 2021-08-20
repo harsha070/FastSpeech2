@@ -23,6 +23,7 @@ class VarianceAdaptor(nn.Module):
         self.length_regulator = LengthRegulator()
         self.pitch_predictor = VariancePredictor(model_config)
         self.energy_predictor = VariancePredictor(model_config)
+        self.emotion_predictor = VariancePredictor(model_config)
 
         self.pitch_feature_level = preprocess_config["preprocessing"]["pitch"][
             "feature"
@@ -30,20 +31,27 @@ class VarianceAdaptor(nn.Module):
         self.energy_feature_level = preprocess_config["preprocessing"]["energy"][
             "feature"
         ]
+        self.emotion_feature_level = preprocess_config["preprocessing"]["emotion"][
+            "feature"
+        ]
         assert self.pitch_feature_level in ["phoneme_level", "frame_level"]
         assert self.energy_feature_level in ["phoneme_level", "frame_level"]
+        assert self.emotion_feature_level in ["phoneme_level", "frame_level"]
 
         pitch_quantization = model_config["variance_embedding"]["pitch_quantization"]
         energy_quantization = model_config["variance_embedding"]["energy_quantization"]
+        emotion_quantization = model_config["variance_embedding"]["emotion_quantization"]
         n_bins = model_config["variance_embedding"]["n_bins"]
         assert pitch_quantization in ["linear", "log"]
         assert energy_quantization in ["linear", "log"]
+        assert emotion_quantization in ["linear", "log"]
         with open(
             os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
         ) as f:
             stats = json.load(f)
             pitch_min, pitch_max = stats["pitch"][:2]
             energy_min, energy_max = stats["energy"][:2]
+            emotion_min, emotion_max = stats["emotion"][:2]
 
         if pitch_quantization == "log":
             self.pitch_bins = nn.Parameter(
@@ -69,11 +77,26 @@ class VarianceAdaptor(nn.Module):
                 torch.linspace(energy_min, energy_max, n_bins - 1),
                 requires_grad=False,
             )
+        if emotion_quantization == "log":
+            self.emotion_bins = nn.Parameter(
+                torch.exp(
+                    torch.linspace(np.log(emotion_min), np.log(emotion_max), n_bins - 1)
+                ),
+                requires_grad=False,
+            )
+        else:
+            self.emotion_bins = nn.Parameter(
+                torch.linspace(emotion_min, emotion_max, n_bins - 1),
+                requires_grad=False,
+            )
 
         self.pitch_embedding = nn.Embedding(
             n_bins, model_config["transformer"]["encoder_hidden"]
         )
         self.energy_embedding = nn.Embedding(
+            n_bins, model_config["transformer"]["encoder_hidden"]
+        )
+        self.emotion_embedding = nn.Embedding(
             n_bins, model_config["transformer"]["encoder_hidden"]
         )
 
@@ -85,6 +108,17 @@ class VarianceAdaptor(nn.Module):
             prediction = prediction * control
             embedding = self.pitch_embedding(
                 torch.bucketize(prediction, self.pitch_bins)
+            )
+        return prediction, embedding
+
+    def get_emotion_embedding(self, x, target, mask, control):
+        prediction = self.emotion_predictor(x, mask)
+        if target is not None:
+            embedding = self.emotion_embedding(torch.bucketize(target, self.emotion_bins))
+        else:
+            prediction = prediction * control
+            embedding = self.emotion_embedding(
+                torch.bucketize(prediction, self.emotion_bins)
             )
         return prediction, embedding
 
@@ -108,9 +142,11 @@ class VarianceAdaptor(nn.Module):
         pitch_target=None,
         energy_target=None,
         duration_target=None,
+        emotion_target=None,
         p_control=1.0,
         e_control=1.0,
         d_control=1.0,
+        em_control=1.0
     ):
 
         log_duration_prediction = self.duration_predictor(x, src_mask)
@@ -124,6 +160,11 @@ class VarianceAdaptor(nn.Module):
                 x, energy_target, src_mask, p_control
             )
             x = x + energy_embedding
+        if self.emotion_feature_level == "phoneme_level":
+            emotion_prediction, emotion_embedding = self.get_emotion_embedding(
+                x, emotion_target, src_mask, em_control
+            )
+            x = x + emotion_embedding
 
         if duration_target is not None:
             x, mel_len = self.length_regulator(x, duration_target, max_len)
@@ -151,6 +192,7 @@ class VarianceAdaptor(nn.Module):
             x,
             pitch_prediction,
             energy_prediction,
+            emotion_prediction,
             log_duration_prediction,
             duration_rounded,
             mel_len,
