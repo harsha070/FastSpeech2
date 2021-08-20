@@ -16,7 +16,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def to_device(data, device):
-    if len(data) == 12:
+    if len(data) == 13:
         (
             ids,
             raw_texts,
@@ -30,6 +30,7 @@ def to_device(data, device):
             pitches,
             energies,
             durations,
+            emotions
         ) = data
 
         speakers = torch.from_numpy(speakers).long().to(device)
@@ -40,6 +41,7 @@ def to_device(data, device):
         pitches = torch.from_numpy(pitches).float().to(device)
         energies = torch.from_numpy(energies).to(device)
         durations = torch.from_numpy(durations).long().to(device)
+        emotions = torch.from_numpy(emotions).to(device)
 
         return (
             ids,
@@ -54,6 +56,7 @@ def to_device(data, device):
             pitches,
             energies,
             durations,
+            emotions,
         )
 
     if len(data) == 6:
